@@ -63,13 +63,114 @@ def first_time_use(ctx):
     sys.exit(0)
 
 
+# Shorthand tokens for environment contract status.
+_STATUS_TOKENS = {
+    'compatible': 'ok',
+    'unknown': '?',
+    'incompatible': 'x',
+}
+_STATUS_COLORS = {
+    'compatible': 'green',
+    'unknown': 'yellow',
+    'incompatible': 'red',
+}
+
+
+def entry_evaluation(fields):
+    """Returns (status, checks) for a command entry's contract.
+
+    Local overrides are applied so display status matches what the
+    run-time gate will decide.
+    """
+    from keep import environment
+    contract = fields.get('contract')
+    if not contract:
+        return environment.UNKNOWN, [
+            environment.CheckResult('contract',
+                                     'no environment contract declared',
+                                     environment.UNKNOWN)]
+    return environment.evaluate_contract(contract,
+                                         environment.read_overrides())
+
+
+def entry_status(fields):
+    return entry_evaluation(fields)[0]
+
+
+def status_token(status):
+    return _STATUS_TOKENS.get(status, '?')
+
+
+def status_color(status):
+    return _STATUS_COLORS.get(status, 'yellow')
+
+
+def portable_commands(commands):
+    """Strips every non portable bit from a commands document.
+
+    Only desc, alias and a cleaned contract survive; local probe
+    results or unknown fields are dropped before syncing.
+    """
+    from keep import environment
+    portable = {}
+    for cmd, fields in commands.items():
+        entry = {
+            'desc': fields.get('desc', ''),
+            'alias': fields.get('alias', ''),
+        }
+        contract = fields.get('contract')
+        if isinstance(contract, dict) and contract:
+            cleaned = environment.clean_contract(contract)
+            if cleaned:
+                entry['contract'] = cleaned
+        portable[cmd] = entry
+    return portable
+
+
+_CONTRACT_EDIT_HEADER = (
+    "# Runtime environment contract (portable; it will be synced).\n"
+    "# Save the file to accept. Delete everything to cancel.\n"
+    "# Allowed fields: os, arch, shell, cwd, executables, env, paths.\n"
+    "# An entry without a contract is UNKNOWN, never assumed compatible.\n"
+)
+
+
+def edit_contract(initial_contract, editor=None):
+    """Opens a contract in an editor until it validates or is cancelled.
+
+    Returns the cleaned contract dict, or None if the user emptied the
+    document (cancelled). Invalid input reopens the editor with the
+    user's text preserved.
+    """
+    from keep import environment
+    initial_contract = environment.clean_contract(initial_contract)
+    display = json.dumps(initial_contract, indent=2)
+    while True:
+        edited = click.edit(_CONTRACT_EDIT_HEADER + display + '\n',
+                            editor=editor, require_save=False)
+        if edited is None:
+            return None
+        text = '\n'.join(line for line in edited.splitlines()
+                         if not line.lstrip().startswith('#'))
+        if not text.strip():
+            return None
+        try:
+            raw = json.loads(text)
+            return environment.clean_contract(raw)
+        except ValueError as err:
+            click.secho("Invalid contract: {}".format(err), fg='red')
+            display = text
+
+
 def list_commands(ctx):
-    table_data = [['Id', 'Command', 'Description', 'Alias']]
+    table_data = [['Id', 'Env', 'Command', 'Description', 'Alias']]
     no_of_columns = len(table_data[0])
 
     commands = read_commands()
     for i, (cmd, fields) in enumerate(commands.items()):
-        table_data.append([str(i + 1), '$ ' + cmd, fields['desc'], fields['alias']])
+        status = entry_status(fields)
+        table_data.append([str(i + 1), status_token(status),
+                           '$ ' + cmd, fields['desc'], fields['alias']])
 
     table = AsciiTable(table_data)
     max_width = table.table_width//3
@@ -82,6 +183,8 @@ def list_commands(ctx):
 
     table.inner_row_border = True
     print(table.table)
+    click.echo("Env: ok = compatible, ? = unknown/undeclared, "
+               "x = incompatible")
 
 
 def log(ctx, message):
@@ -182,12 +285,15 @@ def remove_command(cmd):
         click.echo('Command - {} - does not exist.'.format(cmd))
 
 
-def save_command(cmd, desc, alias=""):
+def save_command(cmd, desc, alias="", contract=None):
     json_path = os.path.join(dir_path, 'commands.json')
     commands = {}
     if os.path.exists(json_path):
         commands = json.loads(open(json_path, 'r').read())
     fields = {'desc': desc, 'alias': alias}
+    # None means "undeclared"; an explicit {} is a valid declaration.
+    if contract is not None:
+        fields['contract'] = contract
     commands[cmd] = fields
     with open(json_path, 'w') as f:
         f.write(json.dumps(commands))
@@ -239,15 +345,15 @@ def grep_commands(pattern):
             alias = fields['alias']
             if pattern.isdigit() and pattern == str(i + 1):
                 result.clear()
-                result.append((cmd, desc))
+                result.append((cmd, fields))
                 break
             else:
                 if alias == pattern and alias.strip() != "":
                     result.clear()
-                    result.append((cmd, desc))
+                    result.append((cmd, fields))
                     break
                 if re.search(pattern, cmd + " :: " + desc):
-                    result.append((cmd, desc))
+                    result.append((cmd, fields))
                     continue
                 # Show if all the parts of the pattern are in one command/desc
                 keywords_len = len(pattern.split())
@@ -256,16 +362,26 @@ def grep_commands(pattern):
                     if keyword.lower() in cmd.lower() or keyword.lower() in desc.lower():
                         i_keyword += 1
                 if i_keyword == keywords_len:
-                    result.append((cmd, desc))
+                    result.append((cmd, fields))
     return result
 
 
 def select_command(commands):
     click.echo("", err=True)
-    for idx, command in enumerate(commands):
-        cmd, desc = command
+    for idx, (cmd, fields) in enumerate(commands):
+        status, checks = entry_evaluation(fields)
+        click.secho(f" {status_token(status)} ", nl=False,
+                    fg=status_color(status), err=True)
         click.secho(f" {idx + 1} \t", nl=False, fg='yellow', err=True)
-        click.secho(f" {cmd} :: {desc}", fg='green', err=True)
+        click.secho(f" {cmd} :: {fields['desc']}", nl=False, fg='green',
+                    err=True)
+        reasons = [check.detail for check in checks
+                   if check.status != 'compatible']
+        if reasons:
+            click.secho(f"   ({'; '.join(reasons[:2])})", fg=status_color(status),
+                        err=True)
+        else:
+            click.echo("", err=True)
 
     selection = 1
     while True and len(commands) > 1:
@@ -283,8 +399,10 @@ def select_command(commands):
 
 def edit_commands(commands, editor=None, edit_header=""):
     edit_msg = [edit_header]
+    old_contracts = {}
     for cmd, fields in commands.items():
         desc, alias = fields['desc'], fields['alias']
+        old_contracts[cmd] = fields.get('contract')
         cmd = json.dumps(cmd)
         desc = json.dumps(desc)
         alias = json.dumps(alias)
@@ -307,7 +425,13 @@ def edit_commands(commands, editor=None, edit_header=""):
                 except ValueError:
                     click.echo("Error parsing json from edit file.")
                     return None
-                new_commands[cmd] = {'desc': desc, 'alias': alias}
+                fields = {'desc': desc, 'alias': alias}
+                # Preserve the portable declaration when the command
+                # text itself is unchanged.
+                contract = old_contracts.get(cmd)
+                if contract:
+                    fields['contract'] = contract
+                new_commands[cmd] = fields
             else:
                 click.echo("Could not read line '{}'".format(line))
     return new_commands

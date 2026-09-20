@@ -1,13 +1,16 @@
 import click
-from keep import cli as kcli, utils
+from keep import cli as kcli, utils, environment
 
 
 @click.group("new", short_help="Create a new entry.", invoke_without_command=True)
 @click.option("--cmd", help="The command to save")
 @click.option("--desc", help="The description of the command")
 @click.option("--alias", default="", help="The alias of the command")
+@click.option("--contract", "--env", "contract", is_flag=True,
+              help="Generate an editable runtime environment contract "
+                   "from this machine")
 @kcli.pass_context
-def cli(kctx, cmd, desc, alias):
+def cli(kctx, cmd, desc, alias, contract):
     """Saves a new command, note or command set."""
     ctx = click.get_current_context()
     if ctx.invoked_subcommand is None:
@@ -17,7 +20,17 @@ def cli(kctx, cmd, desc, alias):
             desc = click.prompt("Description")
         if not alias:
             alias = click.prompt("Alias (optional)", default="")
-        utils.save_command(cmd, desc, alias)
+
+        saved_contract = None
+        if contract:
+            saved_contract = utils.edit_contract(
+                environment.minimal_contract(cmd))
+            if saved_contract is None:
+                click.echo("Cancelled: no contract provided, entry not "
+                           "saved.")
+                return
+
+        utils.save_command(cmd, desc, alias, saved_contract)
         utils.log(kctx, f"Saved the new command - {cmd} - with the description - {desc}.")
 
 

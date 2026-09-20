@@ -11,8 +11,8 @@ def cli(ctx, pattern):
     if matches:
         selected = utils.select_command(matches)
         if selected >= 0:
-            cmd, desc = matches[selected]
-            command = "$ {} :: {}".format(cmd, desc)
+            cmd, fields = matches[selected]
+            command = "$ {} :: {}".format(cmd, fields['desc'])
             if click.confirm("Remove\n\t{}\n\n?".format(command), default=True):
                 utils.remove_command(cmd)
                 click.echo('Command successfully removed!')

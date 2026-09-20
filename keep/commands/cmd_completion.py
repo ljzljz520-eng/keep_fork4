@@ -11,10 +11,18 @@ from keep import cli, utils
 def cli(ctx, shell):
     """Completion helpers for keep"""
     commands = utils.read_commands()
+    if not commands:
+        return
 
     if shell == 'zsh':
+        # zsh _describe renders the text after ':' as the description;
+        # the compatibility marker rides along in that description.
         for cmd, fields in commands.items():
-            print("{cmd}:{desc}".format(cmd=cmd, desc=fields['desc']))
+            token = utils.status_token(utils.entry_status(fields))
+            print("{cmd}:[{token}] {desc}".format(
+                cmd=cmd, token=token, desc=fields['desc']))
     elif shell == 'bash':
+        # Plain bash completion has no per-candidate description channel,
+        # so only the command words are emitted.
         for cmd in commands.keys():
             print(quote(cmd))

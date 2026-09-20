@@ -9,8 +9,11 @@ def cli(ctx, pattern):
     """Searches for a saved command."""
     matches = utils.grep_commands(pattern)
     if matches:
-        for cmd, desc in matches:
-            click.secho("$ {} :: {}".format(cmd, desc), fg='green')
+        for cmd, fields in matches:
+            status = utils.entry_status(fields)
+            click.secho("[{}] ".format(utils.status_token(status)),
+                        nl=False, fg=utils.status_color(status))
+            click.secho("$ {} :: {}".format(cmd, fields['desc']), fg='green')
     elif matches == []:
         click.echo('No saved commands matches the pattern {}'.format(pattern))
     else:

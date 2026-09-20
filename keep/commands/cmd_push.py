@@ -22,7 +22,10 @@ def cli(ctx):
     if not commands:
         click.echo("No commands to push. Add one by 'keep new'. ")
     else:
+        # Only portable declarations (desc/alias/contract) leave the
+        # machine; local probes and other keys are stripped.
+        portable = utils.portable_commands(commands)
         hub = Github(token['token'])
         gist = hub.get_gist(token['gist'])
-        gist.edit(files={'commands.json': InputFileContent(json.dumps(commands))})
+        gist.edit(files={'commands.json': InputFileContent(json.dumps(portable))})
         click.echo("Done!")
